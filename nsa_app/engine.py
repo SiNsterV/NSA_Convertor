@@ -8,6 +8,7 @@ import logging
 import os
 from pathlib import Path
 import shutil
+import zipfile
 
 from . import RENDERER_VERSION
 from .drive import DriveClient, SourceItem, candidate
@@ -71,11 +72,85 @@ def local_inventory(config: SyncConfig) -> list[SourceItem]:
     return result
 
 
-def output_relative(item: SourceItem, state: dict, output: Path, note_format: str) -> Path:
+NOTEIN_TRASH_FOLDER = "_Trash"
+INVALID_PATH_CHARS = '<>:"/\\|?*'
+
+
+def _safe_notein_path_part(name: str) -> str:
+    cleaned = "".join("_" if char in INVALID_PATH_CHARS or ord(char) < 32 else char for char in str(name))
+    return cleaned.strip().rstrip(".") or "_"
+
+
+def _read_notein_json(bundle: Path, name: str) -> dict:
+    try:
+        with zipfile.ZipFile(bundle) as archive:
+            value = json.loads(archive.read(name))
+            return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def read_notein_folder_meta(bundle: Path) -> dict:
+    try:
+        with zipfile.ZipFile(bundle) as archive:
+            for name in archive.namelist():
+                if name.startswith("folder_") and not name.startswith("folder_tn_") and name != "folder_labels.json":
+                    return _read_notein_json(bundle, name)
+    except Exception:
+        pass
+    return {}
+
+
+def read_notein_note_meta(bundle: Path) -> dict:
+    return _read_notein_json(bundle, "note_meta.json")
+
+
+def build_notein_folder_paths(files: list[Path]) -> dict[str, Path]:
+    folders = {}
+    for path in files:
+        if not path.is_file() or not zipfile.is_zipfile(path):
+            continue
+        meta = read_notein_folder_meta(path)
+        if meta.get("id"):
+            folders[str(meta["id"])] = meta
+
+    resolved: dict[str, Path] = {}
+
+    def resolve(folder_id: str, seen: set[str]) -> Path:
+        if folder_id in resolved:
+            return resolved[folder_id]
+        meta = folders[folder_id]
+        result = Path(_safe_notein_path_part(meta.get("title") or folder_id))
+        parent_id = str(meta.get("parentId") or "")
+        if parent_id in folders and parent_id not in seen:
+            result = resolve(parent_id, seen | {folder_id}) / result
+        resolved[folder_id] = result
+        return result
+
+    for folder_id in folders:
+        resolve(folder_id, set())
+    return resolved
+
+
+def notein_folder_path(bundle: Path, folder_paths: dict[str, Path]) -> Path:
+    meta = read_notein_note_meta(bundle)
+    if meta.get("inTrashBin"):
+        return Path(NOTEIN_TRASH_FOLDER)
+    return folder_paths.get(str(meta.get("parentId") or ""), Path())
+
+
+def output_relative(
+    item: SourceItem,
+    state: dict,
+    output: Path,
+    note_format: str,
+    notein_paths: dict[str, Path] | None = None,
+) -> Path:
     stem = Path(item.name).stem
     if note_format == "notein" and item.name.lower().endswith(".notein.zip"):
         stem = Path(stem).stem
-    parts = [safe_component(part) for part in item.relative.parent.parts]
+    source_parent = (notein_paths or {}).get(item.key, item.relative.parent) if note_format == "notein" else item.relative.parent
+    parts = [safe_component(part) for part in source_parent.parts]
     desired = Path(*parts) / (safe_component(stem) + ".pdf")
     allocation_key = item.key + "\n" + desired.as_posix()
     allocated = state.setdefault("names", {})
@@ -131,6 +206,28 @@ def sync(config: SyncConfig, emit=lambda event: None, cancelled=lambda: False,
                 drive = drive_factory(config.oauth_client) if config.provider == "gdrive" else None
                 items = drive.inventory(config.source, config.note_format, config.recursive) if drive else local_inventory(config)
                 result.found = len(items)
+                notein_paths: dict[str, Path] = {}
+                drive_sources: dict[str, Path] = {}
+                if config.note_format == "notein":
+                    if drive:
+                        for index, item in enumerate(items):
+                            current_name = item.relative.as_posix()
+                            cache_name = hashlib.sha256(item.key.encode()).hexdigest() + ".notein"
+                            source = contained(cache, Path(cache_name))
+                            cache_valid = source.is_file() and (not item.checksum or file_hash(source) == item.checksum)
+                            if not cache_valid:
+                                emit(ProgressEvent("downloading", "Downloading backup", current_name, index, len(items)))
+                                drive.download(item, source, lambda current, total: emit(
+                                    ProgressEvent("download", "Downloading", current_name, current, total)
+                                ))
+                                result.downloaded += 1
+                            drive_sources[item.key] = source
+                    notein_files = [item.path for item in items if item.path] + list(drive_sources.values())
+                    folder_paths = build_notein_folder_paths(notein_files)
+                    for item in items:
+                        source = drive_sources.get(item.key) or item.path
+                        if source:
+                            notein_paths[item.key] = notein_folder_path(source, folder_paths)
                 # Legacy state is read only for output ownership. Hashes are revalidated
                 # with the new renderer fingerprint; never overwrite the legacy file.
                 legacy = read_json(Path(config.legacy_state)) if config.legacy_state else {}
@@ -148,11 +245,13 @@ def sync(config: SyncConfig, emit=lambda event: None, cancelled=lambda: False,
                                 wanted = Path(*[safe_component(p) for p in item.relative.parent.parts]) / (safe_component(Path(item.name).stem) + ".pdf")
                                 if old_pdf.resolve() == (output / wanted).resolve():
                                     state["names"][item.key + "\n" + wanted.as_posix()] = wanted.as_posix()
-                        relative_pdf = output_relative(item, state, output, config.note_format)
+                        relative_pdf = output_relative(item, state, output, config.note_format, notein_paths)
                         destination = contained(output, relative_pdf)
                         # Persist allocations even when a job fails, keeping collision names stable.
                         atomic_json(state_path, state)
-                        if drive:
+                        if drive and item.key in drive_sources:
+                            source = drive_sources[item.key]
+                        elif drive:
                             cache_name = hashlib.sha256(item.key.encode()).hexdigest() + (".nsa" if config.note_format == "noteshelf" else ".notein")
                             source = contained(cache, Path(cache_name))
                             cache_valid = source.is_file() and item.checksum and file_hash(source) == item.checksum

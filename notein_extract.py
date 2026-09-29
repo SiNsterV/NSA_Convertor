@@ -30,6 +30,7 @@ import os
 import re
 import shutil
 import sqlite3
+import struct
 import sys
 import uuid
 import zipfile
@@ -754,7 +755,7 @@ def draw_stroke(
 ) -> None:
     if row["record_json"]:
         draw_legacy_stroke(draw, row, origin_x, origin_y)
-    elif row["ink_stroke_json"]:
+    else:
         draw_ink_stroke(draw, row, origin_x, origin_y)
 
 
@@ -796,8 +797,10 @@ def draw_ink_stroke(
     origin_x: float = 0.0,
     origin_y: float = 0.0,
 ) -> None:
+    payload = load_ink_stroke_payload(row)
+    if payload is None:
+        return
     try:
-        payload = json.loads(row["ink_stroke_json"])
         stroke = payload["stroke"]
         inputs = stroke["inputs"]["inputs"]
         brush = stroke.get("brush", {})
@@ -831,6 +834,92 @@ def draw_ink_stroke(
     if is_marker_brush(brush, width):
         color = with_alpha(color, HIGHLIGHTER_ALPHA)
     draw_polyline(draw, points, color, width)
+
+
+INK_BLOB_SIZE = 4
+INK_BLOB_COLOR = 5
+INK_BLOB_EPSILON = 6
+INK_BLOB_BRUSH_FAMILY = 7
+INK_BLOB_POINTS = 10
+INK_BLOB_STROKE_TO_WORLD = 12
+INK_BLOB_WORLD_TO_VIEW = 13
+
+
+def read_protobuf_fields(data: bytes) -> dict[int, Any]:
+    def read_varint(position: int) -> tuple[int, int]:
+        value = shift = 0
+        while position < len(data):
+            byte = data[position]
+            position += 1
+            value |= (byte & 0x7F) << shift
+            if byte < 0x80:
+                return value, position
+            shift += 7
+        raise ValueError("Truncated ink stroke protobuf")
+
+    fields: dict[int, Any] = {}
+    position = 0
+    while position < len(data):
+        key, position = read_varint(position)
+        wire_type = key & 7
+        if wire_type == 0:
+            value, position = read_varint(position)
+        elif wire_type == 1:
+            value, position = data[position:position + 8], position + 8
+        elif wire_type == 2:
+            length, position = read_varint(position)
+            value, position = data[position:position + length], position + length
+        elif wire_type == 5:
+            value, position = data[position:position + 4], position + 4
+        else:
+            raise ValueError(f"Unsupported ink stroke protobuf wire type {wire_type}")
+        fields[key >> 3] = value
+    return fields
+
+
+def ink_stroke_blob_to_payload(blob: bytes) -> dict[str, Any]:
+    fields = read_protobuf_fields(blob)
+
+    def floats(raw: bytes) -> list[float]:
+        usable = len(raw) // 4 * 4
+        return list(struct.unpack(f"<{usable // 4}f", raw[:usable])) if usable else []
+
+    def matrix(field: int) -> Optional[str]:
+        raw = fields.get(field)
+        if not isinstance(raw, bytes) or len(raw) != 36:
+            return None
+        return ",".join(repr(value) for value in floats(raw))
+
+    coords = floats(fields.get(INK_BLOB_POINTS, b""))
+    brush: dict[str, Any] = {}
+    if isinstance(fields.get(INK_BLOB_SIZE), bytes) and len(fields[INK_BLOB_SIZE]) >= 4:
+        brush["size"] = struct.unpack("<f", fields[INK_BLOB_SIZE][:4])[0]
+    if isinstance(fields.get(INK_BLOB_COLOR), int):
+        brush["color"] = fields[INK_BLOB_COLOR]
+    if isinstance(fields.get(INK_BLOB_EPSILON), bytes) and len(fields[INK_BLOB_EPSILON]) >= 4:
+        brush["epsilon"] = struct.unpack("<f", fields[INK_BLOB_EPSILON][:4])[0]
+    if isinstance(fields.get(INK_BLOB_BRUSH_FAMILY), bytes):
+        brush["brushFamilyId"] = fields[INK_BLOB_BRUSH_FAMILY].decode("utf-8", "replace")
+
+    return {
+        "stroke": {
+            "inputs": {"inputs": [{"x": x, "y": y} for x, y in zip(coords[0::2], coords[1::2])]},
+            "brush": brush,
+        },
+        "strokeToWorldTransform": matrix(INK_BLOB_STROKE_TO_WORLD),
+        "worldToViewTransform": matrix(INK_BLOB_WORLD_TO_VIEW),
+    }
+
+
+def load_ink_stroke_payload(row: sqlite3.Row) -> Optional[dict[str, Any]]:
+    try:
+        if row["ink_stroke_json"]:
+            return json.loads(row["ink_stroke_json"])
+        if "ink_stroke_blob" in row.keys() and row["ink_stroke_blob"]:
+            return ink_stroke_blob_to_payload(bytes(row["ink_stroke_blob"]))
+    except Exception:
+        return None
+    return None
 
 
 def dedupe_points(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
@@ -1223,25 +1312,64 @@ def write_vector_pdf(output_pdf: Path, note_data: NoteRenderData, source_dir: Pa
         write_pdf(output_pdf, page_images)
         return
 
+    background_docs: dict[Path, Any] = {}
     with fitz.open() as doc:
-        for page_info in note_data.pages:
-            report_page(page_info.index, len(note_data.pages))
-            pdf_page = doc.new_page(
-                width=pdf_units(page_info.width),
-                height=pdf_units(page_info.height),
-            )
-            draw_pdf_page_background(pdf_page, page_info)
-            draw_pdf_non_image_items(
-                pdf_page=pdf_page,
-                page_info=page_info,
-                entities=note_data.page_entities[page_info.page_id],
-                layer_index=note_data.layer_index,
-            )
+        try:
+            for page_info in note_data.pages:
+                report_page(page_info.index, len(note_data.pages))
+                pdf_page = doc.new_page(
+                    width=pdf_units(page_info.width),
+                    height=pdf_units(page_info.height),
+                )
+                draw_pdf_page_background(pdf_page, page_info)
+                draw_pdf_imported_page(pdf_page, page_info, source_dir, background_docs)
+                draw_pdf_non_image_items(
+                    pdf_page=pdf_page,
+                    page_info=page_info,
+                    entities=note_data.page_entities[page_info.page_id],
+                    layer_index=note_data.layer_index,
+                )
 
-        draw_pdf_images_with_page_spillover(doc, note_data.pages, note_data.page_entities, source_dir)
+            draw_pdf_images_with_page_spillover(doc, note_data.pages, note_data.page_entities, source_dir)
 
-        output_pdf.parent.mkdir(parents=True, exist_ok=True)
-        doc.save(output_pdf)
+            output_pdf.parent.mkdir(parents=True, exist_ok=True)
+            doc.save(output_pdf)
+        finally:
+            for background_doc in background_docs.values():
+                if background_doc is not None:
+                    background_doc.close()
+
+
+def draw_pdf_imported_page(
+    pdf_page: Any,
+    page: PageInfo,
+    source_dir: Path,
+    background_docs: dict[Path, Any],
+) -> None:
+    theme = parse_json_object(page.page_row["paper_theme"])
+    if "PdfPaperTheme" not in str(theme.get("type", "")):
+        return
+    pdf_info = theme.get("pdfInfo") or {}
+    basename = Path(str(pdf_info.get("pdfPath") or "").replace("\\", "/")).name
+    if not basename:
+        return
+
+    path = source_dir / f"note_pdf_{basename}"
+    if not path.exists():
+        path = resolve_asset_path(source_dir, basename)
+    if path is None:
+        return
+
+    if path not in background_docs:
+        try:
+            background_docs[path] = fitz.open(path)
+        except Exception:
+            background_docs[path] = None
+    background_doc = background_docs[path]
+    page_num = safe_int(theme.get("pageNum"), -1)
+    if background_doc is None or not 0 <= page_num < len(background_doc):
+        return
+    pdf_page.show_pdf_page(pdf_page.rect, background_doc, page_num, keep_proportion=True)
 
 
 def draw_pdf_page_background(pdf_page: Any, page: PageInfo) -> None:
@@ -1442,7 +1570,7 @@ def draw_pdf_arrow(
 def draw_pdf_stroke(pdf_page: Any, page_info: PageInfo, row: sqlite3.Row) -> None:
     if row["record_json"]:
         draw_pdf_legacy_stroke(pdf_page, page_info, row)
-    elif row["ink_stroke_json"]:
+    else:
         draw_pdf_ink_stroke(pdf_page, page_info, row)
 
 
@@ -1473,8 +1601,10 @@ def draw_pdf_legacy_stroke(pdf_page: Any, page_info: PageInfo, row: sqlite3.Row)
 
 
 def draw_pdf_ink_stroke(pdf_page: Any, page_info: PageInfo, row: sqlite3.Row) -> None:
+    payload = load_ink_stroke_payload(row)
+    if payload is None:
+        return
     try:
-        payload = json.loads(row["ink_stroke_json"])
         stroke = payload["stroke"]
         inputs = stroke["inputs"]["inputs"]
         brush = stroke.get("brush", {})

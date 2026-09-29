@@ -8,7 +8,7 @@ import zipfile
 import pymupdf
 import pytest
 
-from nsa_app.engine import file_hash, render, sync
+from nsa_app.engine import build_notein_folder_paths, file_hash, notein_folder_path, render, sync
 from nsa_app.models import AuthenticationRequired, SyncConfig
 from nsa_app.safety import OutputLock, contained, safe_component, validate_archive
 from nsa_app.storage import profile_dir
@@ -102,6 +102,45 @@ def test_notein_name_collision_is_stable(tmp_path):
     assert len(set(names)) == 2
     assert sync(cfg).skipped == 2
     assert sorted(p.name for p in Path(cfg.output_dir).glob("*.pdf")) == names
+
+
+def test_notein_metadata_rebuilds_nested_and_trash_paths(tmp_path):
+    root = tmp_path / "source"
+    root.mkdir()
+
+    def bundle(name, member, metadata):
+        path = root / name
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr(member, json.dumps(metadata))
+        return path
+
+    bundle("folder-root.notein", "folder_root.json", {"id": "root", "title": "School"})
+    bundle("folder-child.notein", "folder_child.json", {"id": "child", "title": "Math", "parentId": "root"})
+    note = bundle("note.notein", "note_meta.json", {"parentId": "child"})
+    trash = bundle("trash.notein", "note_meta.json", {"parentId": "child", "inTrashBin": True})
+
+    folder_paths = build_notein_folder_paths([*root.iterdir()])
+    assert folder_paths == {"root": Path("School"), "child": Path("School") / "Math"}
+    assert notein_folder_path(note, folder_paths) == Path("School") / "Math"
+    assert notein_folder_path(trash, folder_paths) == Path("_Trash")
+
+
+def test_notein_blob_stroke_is_rendered(tmp_path):
+    cfg = config(tmp_path, "notein")
+    make_notein(Path(cfg.source) / "note.notein", blob=True)
+
+    assert sync(cfg).converted == 1
+    with pymupdf.open(Path(cfg.output_dir) / "note.pdf") as document:
+        assert len(document[0].get_drawings()) >= 2
+
+
+def test_notein_pdf_background_is_rendered(tmp_path):
+    cfg = config(tmp_path, "notein")
+    make_notein(Path(cfg.source) / "note.notein", pdf_background=True)
+
+    assert sync(cfg).converted == 1
+    with pymupdf.open(Path(cfg.output_dir) / "note.pdf") as document:
+        assert "Embedded PDF background" in document[0].get_text()
 
 
 def test_unowned_pdf_is_not_overwritten(tmp_path):

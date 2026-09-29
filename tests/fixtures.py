@@ -57,7 +57,7 @@ def make_nsa(path: Path, pages=1, rich=False):
     return path
 
 
-def make_notein(path: Path, rich=True):
+def make_notein(path: Path, rich=True, blob=False, pdf_background=False):
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as temp:
         database = Path(temp) / "note_database_synthetic_db"
@@ -65,7 +65,7 @@ def make_notein(path: Path, rich=True):
         db.executescript("""
             CREATE TABLE NoteContentEntity(page_list TEXT, page_layer_list TEXT);
             CREATE TABLE PageEntity(id TEXT, paper_spec TEXT, paper_theme TEXT);
-            CREATE TABLE StrokeEntity(id TEXT, page_id TEXT, layer_id TEXT, creation_time INTEGER, record_json TEXT, ink_stroke_json TEXT);
+            CREATE TABLE StrokeEntity(id TEXT, page_id TEXT, layer_id TEXT, creation_time INTEGER, record_json TEXT, ink_stroke_json TEXT, ink_stroke_blob BLOB);
             CREATE TABLE ShapeEntity(id TEXT, page_id TEXT, layer_id TEXT, creation_time INTEGER);
             CREATE TABLE TextBoxEntity(id TEXT, page_id TEXT, layer_id TEXT, creation_time INTEGER, text TEXT, left REAL, top REAL, right REAL, bottom REAL, text_size REAL, line_height REAL, default_text_color INTEGER);
             CREATE TABLE ImageEntity(id TEXT, page_id TEXT, layer_id TEXT, creation_time INTEGER, uri TEXT, left REAL, top REAL, right REAL, bottom REAL, rotation REAL);
@@ -73,14 +73,27 @@ def make_notein(path: Path, rich=True):
             CREATE TABLE QuoteEntity(id TEXT, layer_id TEXT, creation_time INTEGER, label_rect TEXT, rect_list TEXT, bg_color INTEGER, color INTEGER);
         """)
         db.execute("INSERT INTO NoteContentEntity VALUES(?, ?)", (json.dumps(["page1"]), json.dumps(["layer1"])))
+        paper_theme = {"baseTheme": {"color": -526353}, "paperStyle": {"type": "blank"}}
+        if pdf_background:
+            paper_theme = {"type": "PdfPaperTheme", "pdfInfo": {"pdfPath": "background.pdf"}, "pageNum": 0}
         db.execute("INSERT INTO PageEntity VALUES(?,?,?)", ("page1", json.dumps({"width": 400, "height": 600}),
-                   json.dumps({"baseTheme": {"color": -526353}, "paperStyle": {"type": "blank"}})))
+                   json.dumps(paper_theme)))
         if rich:
             db.execute("INSERT INTO TextBoxEntity VALUES('text','page1','layer1',0,'Synthetic Notein',30,30,380,100,24,28,-16777216)")
             for index, width, color, y in [(1, 3, -16777216, 150), (2, 20, -256, 220)]:
                 payload = {"type": 2 if index == 2 else 1, "width": width, "color": color,
                            "points": [{"x": 40 + k*45, "y": y + (k % 2)*20} for k in range(6)]}
-                db.execute("INSERT INTO StrokeEntity VALUES(?, 'page1', 'layer1', ?, ?, NULL)", (f"stroke{index}", index, json.dumps(payload)))
+                if blob and index == 1:
+                    points = b"".join(struct.pack("<f", value)
+                                       for point in payload["points"] for value in (point["x"], point["y"]))
+                    ink_blob = bytes([0x52, len(points)]) + points
+                    ink_blob += bytes([0x25]) + struct.pack("<f", width)
+                    ink_blob += bytes([0x28, 0x80, 0x80, 0x80, 0xF8, 0x01])
+                    db.execute("INSERT INTO StrokeEntity VALUES(?, 'page1', 'layer1', ?, NULL, NULL, ?)",
+                               (f"stroke{index}", index, ink_blob))
+                else:
+                    db.execute("INSERT INTO StrokeEntity VALUES(?, 'page1', 'layer1', ?, ?, NULL, NULL)",
+                               (f"stroke{index}", index, json.dumps(payload)))
             db.execute("INSERT INTO ImageEntity VALUES('image','page1','layer1',3,'picture.png',40,320,140,420,0)")
         db.commit()
         db.close()
@@ -88,4 +101,9 @@ def make_notein(path: Path, rich=True):
             archive.writestr(database.name, database.read_bytes())
             if rich:
                 archive.writestr("picture.png", png_bytes())
+            if pdf_background:
+                with pymupdf.open() as background:
+                    page = background.new_page(width=400, height=600)
+                    page.insert_text((30, 500), "Embedded PDF background", fontsize=18)
+                    archive.writestr("note_pdf_background.pdf", background.tobytes())
     return path

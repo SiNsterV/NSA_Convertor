@@ -1,199 +1,117 @@
-# NoteBridge
+# Noteshelf to PDF Converter 📝➡️📄
 
-NoteBridge converts Noteshelf and Notein backup files into clean PDFs on your computer.
+## What is This?
 
-It works as both a Windows desktop app and a command-line sync tool, so you can either:
+This tool converts Noteshelf (Android) notes to PDF format. It extracts your handwritten notes from `.nsa` files and creates clean PDF documents. You can also sync files directly from Google Drive.
 
-- use the app to connect Google Drive and sync your backups directly,
-- point it at a local backup folder,
-- or run the CLI for scripted conversion and syncing.
+New desktop app ready to use!
 
-The Google Drive flow is now designed to be used directly inside the desktop app: connect, choose a folder, then let it convert only new or changed notes into PDF files.
+## Why?
 
-This project is built for backup folders created by Noteshelf/Notein on mobile devices. It reads those exported backups and turns them into readable PDFs without needing the original app to open them.
+Noteshelf on Android itself supports sync and backup to multiple platforms. However, it doesn't offer any way of opening these synced files, the only usage is meant for backup and uploading it back to Noteshelf.
 
-## What it does
+The only other possible way of getting all your notes onto PC is exporting them one by one everytime you modify any of your notes, and I didn't take that as a possibility.
 
-- Converts Noteshelf `.nsa` files to PDF
-- Converts Notein backups (`.notein` / zip-based exports) to PDF
-- Works via a desktop GUI or CLI
-- Syncs from Google Drive or a local folder
-- Keeps incremental state so unchanged files are skipped
-- Can force re-conversion when needed
-- Supports recursive folder scanning
-- Exports diagnostics and creates a desktop shortcut on Windows
+## Quick Start
 
-## Current status
+### Prerequisites
 
-The project is now organized around the `NoteBridge` desktop application and the shared sync engine in `nsa_app/`.
+- Python 3.12 or higher
+- uv / pip (Python package manager)
 
-Key entry points in the repo:
 
-- `desktop.py` - Windows desktop launcher
-- `sync_and_convert.py` - CLI sync/convert entry point
-- `nsa_convertor.py` - direct converter for Noteshelf `.nsa`
-- `notein_extract.py` - direct converter for Notein exports
-- `nsa_app/gui.py` - Qt desktop UI
-- `nsa_app/engine.py` - sync and conversion engine
-- `nsa_app/auth.py` - Google Drive auth and folder parsing
+### Installation
 
-## Requirements
+This project uses [uv](https://github.com/astral-sh/uv) for fast Python package management.
 
-- Python 3.13+
-- Windows recommended for the desktop app
-- [uv](https://github.com/astral-sh/uv) is the preferred package manager
+**Install uv** (if you don't have it):
+```bash
+# Windows
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 
-## Quick start
+# macOS/Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
 
-### 1) Install dependencies
-
+**Install dependencies:**
 ```bash
 uv sync
 ```
 
-If you use plain pip instead:
+### Usage (Gdrive sync recommended)
 
-```bash
-python -m venv .venv
-pip install -r requirements.txt
-```
+#### Local usage
 
-### 2) Start the desktop app
-
+Setup Google drive, then start the desktop version
 ```bash
 uv run desktop.py
 ```
 
-Or on Windows, simply run:
+Next, follow the setup - choose the sync type, folder and sync everything!
 
-```powershell
-start_desktop.cmd
-```
+## Google Drive Sync
 
-The app opens a window where you can configure:
+Automatically download and convert synced notes from Google Drive.
 
-- note format: Noteshelf or Notein
-- source: local folder or Google Drive
-- output folder: where the PDFs will be saved
-- recursive mode: include subfolders or not
+### Setup (One Time)
 
-On first launch, the app can also create a `NoteBridge` shortcut on your Windows Desktop.
+1. **Create Google Cloud Project**:
+   - Go to [Google Cloud Console](https://console.cloud.google.com/)
+   - Create a new project
+   - Enable the Google Drive API
 
-## Desktop app workflow
+2. **Create OAuth Credentials**:
+   - Navigate to "APIs & Services" → "Credentials"
+   - Click "Create Credentials" → "OAuth 2.0 Client ID"
+   - Select "Desktop app" as application type
+   - Download the credentials file
 
-1. Start the app.
-2. Choose the note format: Noteshelf or Notein.
-3. Choose a local backup folder or click `Connect Google Drive`.
-4. Select the Google Drive folder you want to sync, or browse to a local folder.
-5. Set a PDF destination folder.
-6. Review the setup and click `Sync now`.
-7. The app scans all supported files, checks hashes, and converts only changed or missing notes.
+3. **Configure the Tool**:
+   - Save the downloaded file as `credentials.json` in the project directory
+   - Go to "OAuth consent screen" → "Test users"
+   - Add your Google account as a test user
 
-Google Drive is now synced directly through the app, so you do not need to manually manage a CLI-only sync flow for the normal desktop experience.
+## CLI Usage
 
-The UI keeps a saved profile under the app data directory, so your last settings remain available between sessions.
-
-## Command-line usage
-
-### Local backup folder
+- RECOMMENDED: Specify `DEFAULT_PATH` in `.env` or add `--output-dir ".\FOLDER"` parameter. Check `.env.example` for more information.
 
 ```bash
-uv run sync_and_convert.py --provider local --local-dir "C:\Path\To\Notes" --output-dir "C:\Path\To\PDFs"
+uv run sync_and_convert.py --provider gdrive --folder-id "YOUR_FOLDER_ID"
 ```
 
-### Google Drive folder
-
-```bash
-uv run sync_and_convert.py --provider gdrive --folder-id "YOUR_FOLDER_ID" --output-dir "C:\Path\To\PDFs"
+**How to find your folder ID:**
+Open your folder in Google Drive. The URL looks like:
 ```
-
-### Watch mode
-
-```bash
-uv run sync_and_convert.py --provider local --local-dir "C:\Path\To\Notes" --output-dir "C:\Path\To\PDFs" --watch --interval 300
-```
-
-### Force re-conversion
-
-```bash
-uv run sync_and_convert.py --provider local --local-dir "C:\Path\To\Notes" --output-dir "C:\Path\To\PDFs" --force
-```
-
-### Notein format
-
-```bash
-uv run sync_and_convert.py --provider local --local-dir "C:\Path\To\NoteinBackups" --output-dir "C:\Path\To\PDFs" --notein
-```
-
-### CLI options
-
-- `--provider {local,gdrive}`
-- `--local-dir` - local source folder
-- `--output-dir` - where PDFs are stored
-- `--folder-id` - Google Drive folder ID or URL
-- `--no-recursive` - disable recursive scanning
-- `--watch` - keep polling until interrupted
-- `--interval` - watch interval in seconds
-- `--force` - re-convert even if files are unchanged
-- `--quiet` - reduce terminal output
-- `--credentials` - custom OAuth client JSON path for Google Drive
-- `--notein` - treat the source as Notein instead of Noteshelf
-
-## Google Drive setup
-
-The regular desktop workflow now handles Google Drive directly in the app. You only need the OAuth client JSON when running the CLI path or when you want to override the default credentials file.
-
-### App flow
-
-1. Launch the desktop app.
-2. Choose `Google Drive` as the source.
-3. Click `Connect Google Drive`.
-4. Sign in in your browser.
-5. Browse to the folder you want to sync and select it.
-6. Set the PDF output folder and start the sync.
-
-The app remembers the login after the first successful sign-in.
-
-### Manual CLI setup only
-
-If you want to use the command line directly, create a desktop OAuth client in Google Cloud and save the JSON file as `credentials.json` in the project root.
-
-1. Go to the [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project
-3. Enable the Google Drive API
-4. Create OAuth credentials for a `Desktop app`
-5. Download the JSON file
-6. Save it as `credentials.json` in this project folder
-7. Run the CLI and sign in through the browser
-
-You can also pass a custom credentials file:
-
-```bash
-uv run sync_and_convert.py --provider gdrive --folder-id "YOUR_FOLDER_ID" --credentials "C:\path\to\my-client.json"
-```
-
-To find a Google Drive folder ID, open the folder and inspect the URL:
-
-```text
 https://drive.google.com/drive/folders/1a2b3c4d5e...
-                                     ^ folder ID
+                                        ↑ This is your folder ID
 ```
 
-## Direct single-file conversion
+The folder ID should be of the one at the top of the structure, I have this structure
 
-If you just want to convert an exported backup without using the GUI or sync engine:
+My Disk/Noteshelf 3 Android/My/personal/names/of/folders
+
+and the folder ID is of `Noteshelf 3 Android`, but of course you can set any folder you want.
+
+The first time you run this, a browser window opens for authorization. After that, it remembers your login.
+
+### What Happens?
+
+1. All `.nsa` files download to local folder `nsa_files/` in the same structure from your GDrive
+2. Files convert to PDFs in your specified folder from `DEFAULT_PATH` or in default `pdf_output/`, or other specified folder using `--output-dir`
+3. Based on hashes, only modified (or missing) files are downloaded
+4. Only changed files are re-converted (based on file hashes from GDrive and local changes)
+
+### Local Mode
+
+Already have `.nsa` files on your computer?
 
 ```bash
-uv run nsa_convertor.py "C:\Path\To\note.nsa" -o "C:\Path\To\note.pdf"
+uv run sync_and_convert.py --provider local --local-dir "C:\Path\To\Notes"
 ```
 
-Convert a whole folder:
+## Options
 
-```bash
-uv run nsa_convertor.py "C:\Path\To\NoteshelfBackups" --outdir "C:\Path\To\PDFs"
-```
-
-You can fine-tune the render parameters:
+You can customize conversion settings:
 
 ```bash
 uv run nsa_convertor.py notes.nsa -o notes.pdf \
@@ -202,82 +120,38 @@ uv run nsa_convertor.py notes.nsa -o notes.pdf \
   --epsilon 1.0
 ```
 
-Common flags:
+- `--highlighter-opacity`: How transparent highlighters appear (0-1, default: 0.38)
+- `--highlighter-ratio`: How much wider highlighters are vs pens (default: 5.0)
+- `--epsilon`: Smoothing level for strokes (default: 0.8)
+- `--no-smooth`: Turn off smoothing
+- `--quiet`: Less output
+- `--notein`: support for notein
 
-- `--highlighter-opacity` - transparency for highlighter strokes
-- `--highlighter-ratio` - wider highlighter rendering compared to pen strokes
-- `--epsilon` - smoothing parameter
-- `--no-smooth` - disable smoothing
-- `--quiet` - quieter output
+For Notein backups, PDFs are placed in the folder structure described by the
+backup metadata. Notes in Notein's trash are written under `_Trash/`.
 
-## How conversion works
+## How It Works
 
-The converter reads backup archives and reconstructs the note template plus annotations:
+Noteshelf `.nsa` files are ZIP archives containing:
+- **Document.plist**: Page info and metadata
+- **Templates/**: Background PDFs
+- **Annotations/**: SQLite databases with your strokes and drawings
 
-1. It locates the source backup file.
-2. It checks whether the backup or output PDF changed.
-3. It stores a signed state so unchanged items are skipped.
-4. It renders the page template and handwritten strokes onto a PDF.
-5. It writes the final PDF atomically to avoid leaving partially written files behind.
-
-This keeps the workflow efficient when syncing large note collections.
-
-## Important notes
-
-- This tool converts backup exports; it does not connect live to the Noteshelf app as a realtime editor.
-- Choose a destination folder that is different from the source folder.
-- Only supported backup files are processed. A bad archive is reported as a failed conversion.
-- The app reads your existing stored backups; it does not upload data back to your device.
+The converter:
+1. Extracts the template PDFs
+2. Reads your handwriting data from SQLite
+3. Intelligently detects highlighters vs pens
+4. Draws everything on the template
+5. Outputs a final PDF
 
 ## Troubleshooting
 
-### `No credentials.json found`
+**"No credentials.json found"**: Download OAuth credentials from Google Cloud Console
 
-Create a Google Desktop OAuth client and save it as `credentials.json` in the project root.
+**"Permission denied"**: Make sure you added yourself as a test user
 
-### `Permission denied` or PDF cannot be written
-
-- close the destination PDF if it is open,
-- choose a writable output folder,
-- make sure the app can access the source dir and target dir.
-
-### `Choose both a source folder and a PDF destination`
-
-Set a valid local folder or Drive folder, and a full destination directory for the PDF output.
-
-### `No supported notes found`
-
-- Check whether the folder contains Noteshelf `.nsa` or Notein backups,
-- confirm the selected format matches the files,
-- verify that subfolder scanning is enabled if necessary.
-
-### Weird colors or highlight rendering
-
-Adjust the converter parameters such as `--highlighter-opacity` and `--highlighter-ratio`.
-
-## Project layout
-
-```text
-.
-|-- desktop.py                 # Windows desktop launcher
-|-- sync_and_convert.py        # CLI sync entry point
-|-- nsa_convertor.py           # Noteshelf direct converter
-|-- notein_extract.py          # Notein direct converter
-|-- credentials.json           # Google OAuth desktop client (optional, local only)
-|-- requirements.txt
-|-- pyproject.toml
-|-- start_desktop.cmd
-|-- nsa_app/                   # app logic, GUI, sync engine, Drive auth
-|-- tests/                     # project tests
-|-- README.md
-```
-
-## License
-
-This project is licensed under the AGPL-3.0-only license.
+**Weird colors**: Try adjusting `--highlighter-opacity` and `--highlighter-ratio`
 
 ## About
 
-NoteBridge was created to solve the real problem that Noteshelf and Notein backup formats are useful for cloud backup, but not easy to read on a desktop without a conversion pipeline.
-
-It keeps conversion local, reproducible, and incremental so you can build a private archive of your handwritten notes as PDFs.
+Created because no existing solution could convert Noteshelf files properly.
