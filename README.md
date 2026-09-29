@@ -4,7 +4,7 @@
 
 This tool converts Noteshelf (Android) notes to PDF format. It extracts your handwritten notes from `.nsa` files and creates clean PDF documents. You can also sync files directly from Google Drive.
 
-This project currently also supports note-taking app **Notein**. More on that in *Usage*.
+New desktop app ready to use!
 
 ## Why?
 
@@ -13,6 +13,12 @@ Noteshelf on Android itself supports sync and backup to multiple platforms. Howe
 The only other possible way of getting all your notes onto PC is exporting them one by one everytime you modify any of your notes, and I didn't take that as a possibility.
 
 ## Quick Start
+
+### Prerequisites
+
+- Python 3.12 or higher
+- uv / pip (Python package manager)
+
 
 ### Installation
 
@@ -32,55 +38,16 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync
 ```
 
-### Or using PIP
-
-### Prerequisites
-
-- Python 3.12 or higher
-- pip (Python package manager)
-
-### Create virtual environment
-
-```bash
-python -m venv .venv
-```
-
-### Install Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### Don't forget
-
-Setup .env or enter `--outdir` parameter.
-
-That's it! Dependencies are managed automatically.
-
 ### Usage (Gdrive sync recommended)
 
 #### Local usage
 
-**Convert a single file:**
+Setup Google drive, then start the desktop version
 ```bash
-uv run nsa_convertor.py notes.nsa -o notes.pdf
+uv run desktop.py
 ```
 
-Notein support
-```bash
-uv run notein_extract.py <dir>
-```
-
-
-**Convert a whole folder:**
-```bash
-uv run nsa_convertor.py /path/to/nsa/folder --outdir /path/to/pdfs
-```
-Notein support
-```bash
-python sync_and_convert.py --provider local --local-dir <dir> --notein
-```
-or specify `DEFAULT_PATH` in `.env` and emit `--outdir`
+Next, follow the setup - choose the sync type, folder and sync everything!
 
 ## Google Drive Sync
 
@@ -104,7 +71,7 @@ Automatically download and convert synced notes from Google Drive.
    - Go to "OAuth consent screen" → "Test users"
    - Add your Google account as a test user
 
-### Run One-Time Sync
+## CLI Usage
 
 - RECOMMENDED: Specify `DEFAULT_PATH` in `.env` or add `--output-dir ".\FOLDER"` parameter. Check `.env.example` for more information.
 
@@ -159,6 +126,9 @@ uv run nsa_convertor.py notes.nsa -o notes.pdf \
 - `--no-smooth`: Turn off smoothing
 - `--quiet`: Less output
 - `--notein`: support for notein
+
+For Notein backups, PDFs are placed in the folder structure described by the
+backup metadata. Notes in Notein's trash are written under `_Trash/`.
 
 ## How It Works
 
