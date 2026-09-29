@@ -1,8 +1,6 @@
 pymupdf
-pillow>=12.1.1
+pillow
 google-auth-oauthlib
 google-auth-httplib2
 google-api-python-client
 python-dotenv
-PySide6>=6.8,<7
-keyring>=25,<26

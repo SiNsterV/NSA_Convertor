@@ -28,14 +28,11 @@ import struct
 import tempfile
 import zipfile
 from collections import Counter, defaultdict
-from contextlib import ExitStack
 from dataclasses import dataclass
 from statistics import median
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-import pymupdf as fitz
-
-from nsa_app.safety import atomic_pdf, report_page, validate_archive
+import fitz  # PyMuPDF
 
 DEFAULT_CURVE_SAMPLES = 4
 MIN_CURVE_SAMPLES = 2
@@ -430,14 +427,12 @@ def collect_pen_stats(zf: zipfile.ZipFile, ann_members: List[str]) -> Dict[int, 
     colors: Dict[int, Counter] = defaultdict(Counter)
 
     for m in ann_members:
-        report_page(0, len(ann_members))
         db_bytes = zf.read(m)
         with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as tf:
             tf.write(db_bytes)
             tf.flush()
             temp_path = tf.name
         
-        con = None
         try:
             con = sqlite3.connect(temp_path)
             cur = con.cursor()
@@ -452,8 +447,6 @@ def collect_pen_stats(zf: zipfile.ZipFile, ann_members: List[str]) -> Dict[int, 
                     colors[pt][int(c)] += 1
             con.close()
         finally:
-            if con is not None:
-                con.close()
             os.unlink(temp_path)
 
     stats: Dict[int, PenStats] = {}
@@ -903,7 +896,7 @@ def draw_page_annotations(
                 pass  # Give up, temp file will be cleaned eventually
 
 
-def _render_nsa_to_pdf(
+def nsa_to_pdf(
     nsa_path: str,
     out_pdf: str,
     *,
@@ -918,8 +911,7 @@ def _render_nsa_to_pdf(
     if verbose:
         print(f"[+] Reading: {nsa_path}")
 
-    with zipfile.ZipFile(nsa_path, "r") as zf, ExitStack() as resources:
-        validate_archive(zf)
+    with zipfile.ZipFile(nsa_path, "r") as zf:
         doc_member = find_document_plist_member(zf)
         doc = plistlib.loads(zf.read(doc_member))
         pages = doc.get("pages", [])
@@ -943,14 +935,12 @@ def _render_nsa_to_pdf(
 
         # Cache pro template PDFs
         tpl_cache: Dict[str, fitz.Document] = {}
-        resources.callback(lambda: [d.close() for d in tpl_cache.values() if not d.is_closed])
 
         # Output doc (nové PDF)
-        out_doc = resources.enter_context(fitz.open())
+        out_doc = fitz.open()
 
         # Pro každou stránku vytvoř stránku v out_doc a dokresli anotace
         for i, p in enumerate(pages, start=1):
-            report_page(i, len(pages))
             uuid = p.get("uuid")
             tpl_name = p.get("associatedPDFFileName") or next(iter(doc.get("documents", {}).keys()), None)
             pdf_idx_1based = p.get("associatedPDFKitPageIndex") or p.get("associatedPageIndex") or 1
@@ -1009,6 +999,7 @@ def _render_nsa_to_pdf(
 
         os.makedirs(os.path.dirname(os.path.abspath(out_pdf)) or ".", exist_ok=True)
         out_doc.save(out_pdf)
+        out_doc.close()
 
     if verbose:
         print(f"[+] Written: {out_pdf}")
@@ -1017,12 +1008,6 @@ def _render_nsa_to_pdf(
 # -----------------------------
 # CLI
 # -----------------------------
-
-def nsa_to_pdf(nsa_path: str, out_pdf: str, **options) -> None:
-    """Convert atomically, retaining the previous PDF on failure or cancellation."""
-    with atomic_pdf(out_pdf) as temporary:
-        _render_nsa_to_pdf(nsa_path, str(temporary), **options)
-
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Convert Noteshelf Android .nsa to PDF (template + annotations).")
