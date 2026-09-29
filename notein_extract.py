@@ -1547,8 +1547,6 @@ def draw_pdf_textbox(pdf_page: Any, page_info: PageInfo, row: sqlite3.Row) -> No
         return
     left, top, right, bottom = rect
     text_size = max(10, float(row["text_size"] or 20))
-    line_height_raw = float(row["line_height"] or 0)
-    line_height = pdf_units(line_height_raw) if line_height_raw >= text_size else None
     try:
         color = android_color_to_rgba(int(row["default_text_color"]))
     except Exception:
@@ -1561,7 +1559,6 @@ def draw_pdf_textbox(pdf_page: Any, page_info: PageInfo, row: sqlite3.Row) -> No
         fontname="helv",
         color=rgb,
         fill_opacity=alpha,
-        lineheight=line_height,
     )
 
 
