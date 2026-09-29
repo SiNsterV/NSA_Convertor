@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import asdict, fields
 from datetime import datetime
+import os
 from pathlib import Path
+import subprocess
 import sys
 
 from PySide6.QtCore import QLockFile, QStandardPaths, QTimer, Qt, QUrl
@@ -67,6 +69,37 @@ def row(*widgets) -> QWidget:
     for child in widgets:
         layout.addWidget(child)
     return widget
+
+
+def create_desktop_shortcut() -> Path:
+    if sys.platform != "win32":
+        raise OSError("Desktop shortcuts are supported on Windows only.")
+    launcher = Path(__file__).resolve().parents[1] / "start_desktop.cmd"
+    if not launcher.is_file():
+        raise FileNotFoundError(f"Launcher not found: {launcher}")
+    desktop = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DesktopLocation))
+    shortcut = desktop / "NoteBridge.lnk"
+    environment = os.environ.copy()
+    environment["DESKTOP_DIR"] = str(desktop)
+    environment["PROJECT_DIR"] = str(launcher.parent)
+    script = """
+$shell = New-Object -ComObject WScript.Shell
+$shortcut = $shell.CreateShortcut((Join-Path $env:DESKTOP_DIR 'NoteBridge.lnk'))
+$shortcut.TargetPath = Join-Path $env:WINDIR 'System32\\cmd.exe'
+$shortcut.Arguments = '/c ""' + (Join-Path $env:PROJECT_DIR 'start_desktop.cmd') + '""'
+$shortcut.WorkingDirectory = $env:PROJECT_DIR
+$shortcut.Description = 'Start NoteBridge desktop application'
+$shortcut.IconLocation = Join-Path $env:WINDIR 'System32\\shell32.dll,220'
+$shortcut.Save()
+"""
+    subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    return shortcut
 
 
 class FolderBrowser(QDialog):
@@ -435,7 +468,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.table, 1)
         footer = QHBoxLayout()
         footer.addWidget(label(f"Public beta {__version__}  ·  Converted on your computer", "muted"), 1)
+        self.shortcut_button = button("Create desktop &shortcut", self.create_shortcut)
         self.diagnostics_button = button("Export &diagnostics…", self.diagnostics)
+        footer.addWidget(self.shortcut_button)
         footer.addWidget(self.diagnostics_button)
         layout.addLayout(footer)
         try:
@@ -506,7 +541,7 @@ class MainWindow(QMainWindow):
         self.jobs.start("sync", payload)
 
     def set_busy(self, busy):
-        for control in (self.sync_button, self.settings_button, self.force, self.reconnect_button, self.diagnostics_button):
+        for control in (self.sync_button, self.settings_button, self.force, self.reconnect_button, self.shortcut_button, self.diagnostics_button):
             control.setEnabled(not busy)
         self.cancel_button.setVisible(busy)
         self.cancel_button.setEnabled(busy)
@@ -580,6 +615,13 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Diagnostics saved", "This file contains app versions and sync counts. Notes, folder paths, and credentials are excluded.")
             except OSError as exc:
                 QMessageBox.warning(self, "Could not export diagnostics", str(exc))
+
+    def create_shortcut(self):
+        try:
+            path = create_desktop_shortcut()
+            QMessageBox.information(self, "Shortcut created", f"The NoteBridge shortcut is ready on your Desktop:\n{path}")
+        except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
+            QMessageBox.warning(self, "Could not create shortcut", str(exc))
 
     def closeEvent(self, event):
         if self.jobs.busy:
