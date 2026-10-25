@@ -58,10 +58,35 @@ def parse_pdfkit_rect(rect_str: str) -> Optional[Tuple[float, float]]:
     return None
 
 
+def is_point_blob(blob: bytes) -> bool:
+    """
+    Newer Noteshelf versions store stroke_segments_v3 as 16-byte points:
+    float32 x, float32 y, uint16 size*100, uint16 pressure*100, uint32 flags.
+    Legacy 28-byte segments chain (x2,y2 == next x1,y1), which resolves blobs
+    whose length fits both layouts.
+    """
+    if not blob or len(blob) % 16 != 0:
+        return False
+    if len(blob) % 28 != 0:
+        return True
+    segs = list(struct.iter_unpack("<7f", blob))
+    if len(segs) < 2:
+        return False
+    chained = sum(1 for a, b in zip(segs, segs[1:]) if a[2] == b[0] and a[3] == b[1])
+    return chained < (len(segs) - 1) / 2
+
+
+def extract_point_records(blob: bytes) -> List[Tuple[float, float, float]]:
+    """16-byte point layout -> list of (x, y, size)."""
+    return [(x, y, size / 100.0) for x, y, size, _pressure, _pad in struct.iter_unpack("<2f2HI", blob)]
+
+
 def extract_points_from_blob(blob: bytes) -> List[Tuple[float, float]]:
     """stroke_segments_v3: 7 float32 per segment (28 bytes). Vrací polyline body."""
     if not blob:
         return []
+    if is_point_blob(blob):
+        return [(x, y) for x, y, _size in extract_point_records(blob)]
     if len(blob) % 28 != 0:
         blob = blob[: len(blob) - (len(blob) % 28)]
         if not blob:
@@ -84,6 +109,12 @@ def extract_segments_from_blob(blob: bytes) -> List[Tuple[float, float, float, f
     stroke_segments_v3: 7 float32 per segment (28 bytes).
     Returns list of (x1, y1, x2, y2, size) where size is the 5th float.
     """
+    if is_point_blob(blob):
+        pts = extract_point_records(blob)
+        if len(pts) == 1:
+            x, y, size = pts[0]
+            return [(x, y, x + 0.01, y, size)]
+        return [(x1, y1, x2, y2, s1) for (x1, y1, s1), (x2, y2, _s2) in zip(pts, pts[1:])]
     if not blob or len(blob) < 28:
         return []
     if len(blob) % 28 != 0:
